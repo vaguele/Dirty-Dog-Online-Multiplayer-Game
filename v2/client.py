@@ -7,7 +7,7 @@ PORT = 5050
 client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 client.connect((HOST, PORT))
 
-def receive():
+def receive() -> None:
     while True:
         try:
             # Read a larger buffer and normalize whitespace so server-leading newlines
@@ -59,12 +59,12 @@ def receive():
             client.close()
             break
 
-def send():
+def send() -> None:
     name = input("Enter your name: ")
 
     # Send JOIN command on connection to match server's expected protocol
     try:
-        client.send(f"{name}".encode())
+        client.send(f"JOIN {name}".encode())
     except Exception:
         print("[ERROR] Failed to send JOIN to server.")
         return

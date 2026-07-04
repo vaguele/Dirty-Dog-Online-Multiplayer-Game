@@ -10,38 +10,40 @@ from datetime import datetime
 # Trophies
 # commentary
 
-def play_round(deck, players, cards_per_player):
+def show_trump(trump):
+    print(f"\nTrump suit: {trump}" if trump else "\nNO TRUMP")
 
-    def commentary():
-        pass
-    
+
+def play_tricks(players, trump, cards_per_player):
+    for _ in range(cards_per_player):
+        leading_suit = players[0].play_lead_card(trump)
+        for player in players[1:]:
+            player.play_card(leading_suit, trump)
+
+        Player.compare_by = "strength"
+        winner = max(players)
+        print(f"\n--{winner.name} takes the trick--")
+        winner.tricks += 1
+
+        new_lead = players.index(winner)
+        for _ in range(new_lead):
+            players.append(players.pop(0))
+
+
+def play_round(deck, players, cards_per_player):
     deck.deal(players, cards_per_player)
     for player in players:
         print(f"\n{player.name}'s hand: {player.hand}")
 
     trump = deck.reveal_trump()
-    if trump:
-        print(f"\nTrump suit: {trump}")
-    else:
-        print(f"\nNO TRUMP")
+    show_trump(trump)
 
     for player in players[:-1]:
         player.place_bid()
     players[-1].place_last_bid()
 
-    for card in range(cards_per_player):
-        leading_suit = players[0].play_lead_card(trump)
-        for player in players[1:]:
-            player.play_card(leading_suit, trump)
+    play_tricks(players, trump, cards_per_player)
 
-        Player.compare_by = "strength"        
-        print(f"\n--{max(players).name} takes the trick--")  
-        max(players).tricks += 1
-
-        new_lead = players.index(max(players))
-        for _ in range(new_lead):
-            players.append(players.pop(0))
-    
     for player in players:
         if player.bid == player.tricks:
             player.score += player.bid + 5
@@ -51,11 +53,8 @@ def play_round(deck, players, cards_per_player):
         player.round_reset()
     deck.refresh()
 
+
 def play_overtime_round(deck, players, cards_per_player):
-
-    def commentary():
-        pass
-
     for player in players[:-1]:
         player.place_bid()
     players[-1].place_last_bid()
@@ -64,31 +63,15 @@ def play_overtime_round(deck, players, cards_per_player):
         print(f"\n{player.name}'s hand: {player.hand}")
 
     trump = deck.reveal_trump()
-    if trump:
-        print(f"\nTrump suit: {trump}")
-    else:
-        print(f"\nNO TRUMP")
+    show_trump(trump)
 
-    for card in range(cards_per_player):
-        leading_suit = players[0].play_lead_card(trump)
-        for player in players[1:]:
-            player.play_card(leading_suit, trump)
+    play_tricks(players, trump, cards_per_player)
 
-        Player.compare_by = "strength"        
-        print(f"\n--{max(players).name} takes the trick--")  
-        max(players).tricks += 1
-
-        new_lead = players.index(max(players))
-        for _ in range(new_lead):
-            players.append(players.pop(0))
-    
     for player in players:
-        if player.bid == player.tricks and player.tied == True:
+        if player.tied and player.bid == player.tricks:
             player.score += player.bid + 5
-        elif player.bid != player.tricks and player.tied == True:
+        elif player.tied and player.bid != player.tricks:
             player.score -= max(player.bid, player.tricks)
-        else:
-            player.score += 0
         print(f"{player.name}'s score: {player.score}")
         player.round_reset()
 
@@ -116,31 +99,30 @@ def play_game(deck, players, max_cards, cards_per_player):
         input("Press Enter to continue...")
 
 def tie_breaker(deck, players, placement):
-    # Determine top winner
     if placement == "winner":
         print("\nLooks like theres a tie for First Place")
-        max_cards = len(deck.cards) -1 // len(players)
+        max_cards = (len(deck.cards) - 1) // len(players)
         cards_per_player = min(5, max_cards)
         deck.deal(players, cards_per_player)
 
-        round = 1
+        round_num = 1
         while cards_per_player != 0:
-            print(f"\nOVERTIME ROUND: {round}")
+            print(f"\nOVERTIME ROUND: {round_num}")
             play_overtime_round(deck, players, cards_per_player)
             cards_per_player -= 1
-            round += 1
+            round_num += 1
 
-    # Determine lowest loser
-    print("\nLooks like theres a tie for Last Place")
-    if placement == "loser":
+    elif placement == "loser":
+        print("\nLooks like theres a tie for Last Place")
         deck.deal(players, 1)
 
         for player in players:
             player.play_overtime_card()
         Player.compare_by = "strength"
 
+        min_strength = min(player.strength for player in players)
         for player in players:
-            if player.strength == min(players):
+            if player.strength == min_strength:
                 player.score -= 1
 
 def game_results(deck, players):

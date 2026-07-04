@@ -1,6 +1,7 @@
 from player import Player
 from deck import Deck
 import random
+from typing import Any, Optional, Tuple, Dict
 
 # Change this value to adjust the default maximum hand size used by the
 # game. It's intentionally a single top-level constant so you can edit it
@@ -42,25 +43,26 @@ class Game:
         self.leading_suit = None
         self.trump = None
 
-    def add_player(self, conn, name):
+    def add_player(self, conn: Any, name: str) -> None:
         self.players[conn] = Player(name)
 
-    def remove_player(self, conn):
+    def remove_player(self, conn: Any) -> None:
         if conn in self.players:
             del self.players[conn]
         if conn in self.ready_players:
             self.ready_players.remove(conn)
         if conn in self.turn_order:
             self.turn_order.remove(conn)
+        
 
-    def mark_ready(self, conn):
-        self.ready_players.add(conn) 
+    def mark_ready(self, conn: Any) -> bool:
+        self.ready_players.add(conn)
         return (
             len(self.players) >= self.min_players
             and len(self.ready_players) == len(self.players)
         )
     
-    def start_game(self):
+    def start_game(self) -> None:
         self.game_started = True
 
         # Compute maximum cards per player so that after dealing each player gets
@@ -85,20 +87,80 @@ class Game:
             self.trump = self.deck.reveal_trump()
         except Exception:
             self.trump = None
+        
 
-    def place_bid(self, conn, bid):
+    def place_bid(self, conn: Any, bid: int) -> None:
         self.bids[conn] = bid
         self.bid_count += bid
+        
 
             
-    def build_hands(self):
-        hands = {}
+    def build_hands(self) -> Dict[Any, str]:
+        hands: Dict[Any, str] = {}
         for conn, player in self.players.items():
             hand_str = ', '.join(str(card) for card in player.hand)
             hands[conn] = f"Your hand: {hand_str}"
         return hands
 
-    def get_current_player_conn(self):
+    def has_suit(self, player: Player, suit: str) -> bool:
+        return any(card.suit == suit for card in player.hand)
+
+    def validate_play(self, conn: Any, card_text: str) -> Tuple[Optional[Any], Optional[str]]:
+        player = self.players.get(conn)
+        if not player:
+            return None, "You are not part of this game."
+
+        matching_card = next((card for card in player.hand if str(card) == card_text), None)
+        if not matching_card:
+            return None, "You don't have that card."
+
+        if self.leading_suit and self.has_suit(player, self.leading_suit) and matching_card.suit != self.leading_suit:
+            return None, f"You must follow suit: {self.leading_suit}."
+
+        return matching_card, None
+
+    def record_play(self, conn: Any, card: Any) -> None:
+        player = self.players[conn]
+        self.played_cards[conn] = card
+        player.hand.remove(card)
+
+        if len(self.played_cards) == 1:
+            self.leading_suit = card.suit
+        
+
+    def resolve_trick(self) -> Tuple[Any, Any]:
+        best_conn: Any = None
+        best_card: Any = None
+        best_score = -1
+
+        for pconn, card in self.played_cards.items():
+            if self.trump and card.suit == self.trump:
+                score = card.weight[card.value] + 100
+            elif card.suit == self.leading_suit:
+                score = card.weight[card.value] + 50
+            else:
+                score = 0
+
+            if score > best_score:
+                best_score = score
+                best_conn = pconn
+                best_card = card
+
+        return best_conn, best_card
+
+
+    def hand_complete(self) -> bool:
+        return all(len(player.hand) == 0 for player in self.players.values())
+
+    def score_round(self) -> None:
+        for player in self.players.values():
+            if player.tricks == player.bid:
+                player.score += 5 + player.bid
+            else:
+                player.score -= max(player.bid, player.tricks)
+        
+
+    def get_current_player_conn(self) -> Any:
         return self.turn_order[self.current_turn_index]
     
     def is_player_turn(self, conn):
@@ -115,6 +177,7 @@ class Game:
 
     def advance_turn(self):
         self.current_turn_index = (self.current_turn_index + 1) % len(self.turn_order)
+        return None
 
     def debug_state(self):
         print("Players:", [p.name for p in self.players.values()])
@@ -122,6 +185,7 @@ class Game:
         print("Ready:", [self.players[c].name for c in self.ready_players])
         print("Turn order:", [self.players[c].name for c in self.turn_order])
         print("Current:", self.players[self.get_current_player_conn()].name)
+        return None
 
     def reset(self):
         # Preserve player objects and connections, reset per-hand state
@@ -175,3 +239,4 @@ class Game:
 
         self.leading_suit = None
         self.trump = None
+        return None

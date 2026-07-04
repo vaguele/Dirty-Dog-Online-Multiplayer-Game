@@ -1,6 +1,7 @@
 from game import Game, DEFAULT_MAX_HANDS
 import socket
 import threading
+from typing import Any
 
 HOST = 'localhost'
 PORT = 5050
@@ -22,7 +23,7 @@ game = Game()
 #   own `min_players` configuration and that single source of truth should be used.
 
 
-def format_player_list():
+def format_player_list() -> str:
     """Return a nicely formatted list of current players with score and READY status."""
     lines = [""]
     for i, conn in enumerate(game.players.keys(), start=1):
@@ -32,7 +33,7 @@ def format_player_list():
     return "\n".join(lines)
 
 
-def announce_current_turn():
+def announce_current_turn() -> None:
     """Broadcast which player's turn it currently is (by name)."""
     try:
         current = game.get_current_player_conn()
@@ -42,7 +43,7 @@ def announce_current_turn():
     except Exception:
         pass
 
-def handle_client(conn, addr):
+def handle_client(conn: Any, addr) -> None:
     print(f"[NEW CONNECTION] {addr} connected.")
     conn.send("Welcome! Please type 'JOIN <name>' to enter the game.".encode())
 
@@ -55,9 +56,12 @@ def handle_client(conn, addr):
             if not msg:
                 break
 
+            normalized_msg = msg.strip()
+            upper_msg = normalized_msg.upper()
+
             # JOIN command
-            if msg.startswith("JOIN ") and game.game_started == False:
-                player_name = msg[5:].strip()
+            if upper_msg.startswith("JOIN ") and not game.game_started:
+                player_name = normalized_msg[5:].strip()
 
                 name_taken = False
                 for p in game.players.values():
@@ -79,16 +83,16 @@ def handle_client(conn, addr):
                 broadcast(format_player_list().encode(), conn)
 
             # SAY command
-            elif msg.startswith("SAY "):
+            elif upper_msg.startswith("SAY "):
                 if player_name:
-                    chat_msg = msg[4:].strip()
+                    chat_msg = normalized_msg[4:].strip()
                     print(f"[{player_name}] says: {chat_msg}")
                     broadcast(f"{player_name}: {chat_msg}".encode(), conn)
                 else:
                     conn.send("You must JOIN before sending messages.".encode())
 
             # READY command
-            elif msg.startswith("READY") and game.game_started == False:
+            elif upper_msg.startswith("READY") and not game.game_started:
                 if player_name:
                     print(f"[{player_name}] is ready to play")
                     # Mark the player as ready first so the formatted list includes them
@@ -122,7 +126,7 @@ def handle_client(conn, addr):
                         current_conn.send("\nIt's your turn.".encode())
                         announce_current_turn()
             
-            elif msg.startswith("BID ") and game.BID_PHASE == True:
+            elif upper_msg.startswith("BID ") and game.BID_PHASE:
                 if not game.game_started:
                     conn.send("The game hasn't started yet.".encode())
                     continue
@@ -176,7 +180,7 @@ def handle_client(conn, addr):
                     # before the turn index moves. advance_turn() is called after
                     # they actually play.
 
-            elif msg.startswith("PLAY ") and game.PLAY_PHASE == True:
+            elif upper_msg.startswith("PLAY ") and game.PLAY_PHASE:
                 if not game.game_started:
                     conn.send("The game hasn't started yet.".encode())
                     continue
@@ -185,29 +189,15 @@ def handle_client(conn, addr):
                     conn.send("It's not your turn.".encode())
                     continue
 
-                card_played = msg[5:].strip()
+                card_played = normalized_msg[5:].strip()
                 player = game.players[conn]
 
-                # Validate card is in player hand
-                matching_card = None
-                for card in player.hand:
-                    if str(card) == card_played:
-                        matching_card = card
-                        break
-
-                if not matching_card:
-                    conn.send("You don't have that card.".encode())
+                matching_card, error = game.validate_play(conn, card_played)
+                if error:
+                    conn.send(error.encode())
                     continue
 
-                # Remove card from hand and broadcast play
-                #
-                #   
-                #
-                #
-                # I NEED TO TRACK PLAYED CARDS SOMEHOW, TRUMPS, TRICKS,
-                # store the actual Card object instead of string for resolution
-                game.played_cards[conn] = matching_card
-                player.hand.remove(matching_card)
+                game.record_play(conn, matching_card)
 
                 # Announce the play consistently to all players (including the player)
                 broadcast(f"\n{player.name} played {card_played}".encode(), None)
@@ -218,10 +208,6 @@ def handle_client(conn, addr):
                     conn.send(f"\nYour hand: {hand_str}".encode())
                 except Exception:
                     pass
-
-                # If this is the first card of the trick, set leading suit
-                if len(game.played_cards) == 1:
-                    game.leading_suit = matching_card.suit
 
                 # Advance turn and notify next player
                 game.advance_turn()
@@ -234,22 +220,8 @@ def handle_client(conn, addr):
                     game.debug_state()
                     broadcast("\nEach player has played a card.".encode(), None)
 
-                    # Determine winner by computing a strength score
-                    strengths = []
-                    for pconn, card in game.played_cards.items():
-                        base = card.weight[card.value]
-                        # Only trump or leading-suit cards can win. Dumped non-trump cards score 0.
-                        if game.trump and card.suit == game.trump:
-                            score = base + 100
-                        elif card.suit == game.leading_suit:
-                            score = base + 50
-                        else:
-                            score = 0
-                        strengths.append((score, pconn, card))
-
-                    # select the highest score (ties are unexpected per rules)
-                    strengths.sort(reverse=True, key=lambda x: x[0])
-                    winner_score, winner_conn, winning_card = strengths[0]
+                    # Determine winner of the trick
+                    winner_conn, winning_card = game.resolve_trick()
                     winner_name = game.players[winner_conn].name
                     broadcast(f"\n{winner_name} won the trick with {winning_card}".encode(), None)
 
@@ -259,7 +231,6 @@ def handle_client(conn, addr):
                     # Clear played cards for next trick and set next turn to winner
                     game.played_cards = {}
                     game.leading_suit = None
-                    # set current turn index to winner (winner leads next)
                     if winner_conn in game.turn_order:
                         game.current_turn_index = game.turn_order.index(winner_conn)
                     # DO NOT advance here; winner should be current and lead next trick.
@@ -268,18 +239,16 @@ def handle_client(conn, addr):
                     remaining = any(p.hand for p in game.players.values())
                     if not remaining:
                         # End of hand — compute scoring per rules
+                        game.score_round()
                         for pconn, player in game.players.items():
                             if player.tricks == player.bid:
-                                player.score += 5 + player.bid
                                 pconn.send(f"You made your bid! Score +{5 + player.bid}. Total: {player.score}".encode())
                             else:
-                                player.score -= max(player.bid, player.tricks)
                                 pconn.send(f"You missed your bid. Tricks: {player.tricks}, Bid: {player.bid}. Total: {player.score}".encode())
                         broadcast("\nRound complete.".encode(), None)
                         # reset for next round
                         game.reset()
 
-                        # If the match is over, announce final standings.
                         if getattr(game, 'match_over', False):
                             try:
                                 broadcast("\nMATCH OVER! Final Scores:".encode(), None)
@@ -348,7 +317,7 @@ def handle_client(conn, addr):
         handle_disconnect(conn)
     conn.close()
 
-def broadcast(message, sender_conn):
+def broadcast(message: bytes, sender_conn: Any) -> None:
     # Iterate over a snapshot of current clients to allow safe removal
     for client in list(game.players.keys()):
         if client != sender_conn:
@@ -363,13 +332,15 @@ def broadcast(message, sender_conn):
                 # Clean up client from game state
                 if client in game.players:
                     game.remove_player(client)
+    
 
-def handle_disconnect(conn):
+def handle_disconnect(conn: Any) -> None:
     game.remove_player(conn)
     # Optional: Reset game state or broadcast status
     if game.game_started and len(game.players) < game.min_players:
         broadcast("A player left. Game cannot continue.".encode(), None)
         game.reset()
+    
 
 def start():
     try:
@@ -386,3 +357,4 @@ def start():
             pass
 
 start()
+ 
