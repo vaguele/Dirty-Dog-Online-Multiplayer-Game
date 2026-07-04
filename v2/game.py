@@ -42,9 +42,12 @@ class Game:
 
         self.leading_suit = None
         self.trump = None
+        self.speaker_order = []
+        self.current_speaker_index = 0
 
     def add_player(self, conn: Any, name: str) -> None:
         self.players[conn] = Player(name)
+        self.refresh_speaker_order()
 
     def remove_player(self, conn: Any) -> None:
         if conn in self.players:
@@ -53,7 +56,32 @@ class Game:
             self.ready_players.remove(conn)
         if conn in self.turn_order:
             self.turn_order.remove(conn)
-        
+        self.refresh_speaker_order()
+
+    def refresh_speaker_order(self) -> None:
+        self.speaker_order = list(self.players.keys())
+        if self.speaker_order:
+            self.current_speaker_index %= len(self.speaker_order)
+        else:
+            self.current_speaker_index = 0
+
+    def get_current_speaker_conn(self) -> Any:
+        if not self.speaker_order:
+            self.refresh_speaker_order()
+        if not self.speaker_order:
+            return None
+        return self.speaker_order[self.current_speaker_index]
+
+    def is_current_speaker(self, conn: Any) -> bool:
+        return self.get_current_speaker_conn() == conn
+
+    def advance_speaker(self) -> Any:
+        if not self.speaker_order:
+            self.refresh_speaker_order()
+        if not self.speaker_order:
+            return None
+        self.current_speaker_index = (self.current_speaker_index + 1) % len(self.speaker_order)
+        return self.get_current_speaker_conn()
 
     def mark_ready(self, conn: Any) -> bool:
         self.ready_players.add(conn)
@@ -82,6 +110,7 @@ class Game:
         self.turn_order = list(self.players.keys())
         random.shuffle(self.turn_order)
         self.current_turn_index = 0
+        self.refresh_speaker_order()
         # Reveal trump from deck if any
         try:
             self.trump = self.deck.reveal_trump()
@@ -161,10 +190,12 @@ class Game:
         
 
     def get_current_player_conn(self) -> Any:
+        if not self.turn_order or not (0 <= self.current_turn_index < len(self.turn_order)):
+            return None
         return self.turn_order[self.current_turn_index]
     
     def is_player_turn(self, conn):
-        return conn == self.get_current_player_conn()
+        return conn is not None and conn == self.get_current_player_conn()
 
     def get_last_player_conn(self):
         """Return the connection object for the last player in the turn order.
@@ -176,6 +207,9 @@ class Game:
         return self.turn_order[-1]
 
     def advance_turn(self):
+        if not self.turn_order:
+            self.current_turn_index = 0
+            return None
         self.current_turn_index = (self.current_turn_index + 1) % len(self.turn_order)
         return None
 
@@ -184,7 +218,11 @@ class Game:
         print("Hands:", [p.hand for p in self.players.values()])
         print("Ready:", [self.players[c].name for c in self.ready_players])
         print("Turn order:", [self.players[c].name for c in self.turn_order])
-        print("Current:", self.players[self.get_current_player_conn()].name)
+        current_conn = self.get_current_player_conn()
+        if current_conn is not None:
+            print("Current:", self.players[current_conn].name)
+        else:
+            print("Current: none")
         return None
 
     def reset(self):
@@ -234,6 +272,7 @@ class Game:
         self.played_cards = {}
 
         self.game_started = False
+        self.refresh_speaker_order()
         self.BID_PHASE = False
         self.PLAY_PHASE = False
 

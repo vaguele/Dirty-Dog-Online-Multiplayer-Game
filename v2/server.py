@@ -2,16 +2,33 @@ from game import Game, DEFAULT_MAX_HANDS
 import socket
 import threading
 from typing import Any
+import argparse
+import os
+import sys
 
-HOST = 'localhost'
-PORT = 5050
+# Allow overriding host/port from the command line for easier local
+# development and running multiple instances without killing processes.
+parser = argparse.ArgumentParser(description="Dirty Dog server")
+parser.add_argument("--host", default="localhost", help="Host to bind to")
+parser.add_argument("--port", type=int, default=5050, help="Port to bind to")
+args = parser.parse_args()
+
+HOST = args.host
+PORT = args.port
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 # Allow quick restart of the server on the same port
 server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-server.bind((HOST, PORT))
-server.listen()
-print(f"[SERVER] Listening on {HOST}:{PORT}")
+try:
+    server.bind((HOST, PORT))
+    server.listen()
+    print(f"[SERVER] Listening on {HOST}:{PORT} (pid={os.getpid()})")
+except OSError as e:
+    print(f"[ERROR] Failed to bind to {HOST}:{PORT}: {e}")
+    print(f"[HINT] Another process may be listening on that port.\n" \
+          f"Run: lsof -nP -iTCP:{PORT} -sTCP:LISTEN to find the PID,\n" \
+          f"then kill <PID> or choose a different port with --port.")
+    sys.exit(1)
 
 game = Game()
 # Notes on cleanup:
@@ -43,9 +60,31 @@ def announce_current_turn() -> None:
     except Exception:
         pass
 
+
+def announce_current_speaker() -> None:
+    """Broadcast whose turn it currently is to speak for chat and light actions."""
+    try:
+        current = game.get_current_speaker_conn()
+        if current in game.players:
+            name = game.players[current].name
+            broadcast(f"\nSPEAKER: {name}".encode(), None)
+    except Exception:
+        pass
+
+
+def safe_send(conn: Any, message: str) -> None:
+    if conn is None:
+        return
+    try:
+        conn.sendall(message.encode())
+    except Exception as exc:
+        print(f"[ERROR] Failed to send to client: {exc}")
+        handle_disconnect(conn)
+
+
 def handle_client(conn: Any, addr) -> None:
     print(f"[NEW CONNECTION] {addr} connected.")
-    conn.send("Welcome! Please type 'JOIN <name>' to enter the game.".encode())
+    safe_send(conn, "Welcome! Please type 'JOIN <name>' to enter the game.")
 
     player_name = None
 
@@ -66,7 +105,7 @@ def handle_client(conn: Any, addr) -> None:
                 name_taken = False
                 for p in game.players.values():
                     if p.name == player_name:
-                        conn.send("That name is already taken. Choose another.".encode())
+                        safe_send(conn, "That name is already taken. Choose another.")
                         name_taken = True
                         break
 
@@ -75,21 +114,37 @@ def handle_client(conn: Any, addr) -> None:
 
                 game.add_player(conn, player_name)
                 print(f"[JOIN] {player_name} joined from {addr}")
-                conn.send(f"Hello, {player_name}! You joined the game.".encode())
+                safe_send(conn, f"Hello, {player_name}! You joined the game.")
                 # Send the joining player a formatted list of current players
-                conn.send(format_player_list().encode())
-                conn.send("\n\nGame starts when all players type <READY>".encode())
+                safe_send(conn, format_player_list())
+                safe_send(conn, "\n\nGame starts when all players type <READY>")
                 # Instead of a join message, broadcast the updated player list
                 broadcast(format_player_list().encode(), conn)
 
-            # SAY command
+            # Speaker turn controls for chat and light actions
+            elif upper_msg.startswith("NEXT") or upper_msg.startswith("PASS"):
+                if not player_name:
+                    safe_send(conn, "You must JOIN before taking turns.")
+                else:
+                    next_conn = game.advance_speaker()
+                    if next_conn is None:
+                        safe_send(conn, "No players are available to speak.")
+                    else:
+                        next_name = game.players[next_conn].name
+                        safe_send(conn, f"You passed the turn to {next_name}.")
+                        announce_current_speaker()
+
             elif upper_msg.startswith("SAY "):
-                if player_name:
+                if not player_name:
+                    safe_send(conn, "You must JOIN before sending messages.")
+                elif not game.is_current_speaker(conn):
+                    safe_send(conn, "It is not your turn to speak. Type NEXT to pass.")
+                else:
                     chat_msg = normalized_msg[4:].strip()
                     print(f"[{player_name}] says: {chat_msg}")
                     broadcast(f"{player_name}: {chat_msg}".encode(), conn)
-                else:
-                    conn.send("You must JOIN before sending messages.".encode())
+                    game.advance_speaker()
+                    announce_current_speaker()
 
             # READY command
             elif upper_msg.startswith("READY") and not game.game_started:
@@ -120,19 +175,19 @@ def handle_client(conn: Any, addr) -> None:
                         game.BID_PHASE = True
 
                         for player_conn, hand_msg in hands.items():
-                            player_conn.send(hand_msg.encode())
+                            safe_send(player_conn, hand_msg)
 
                         current_conn = game.get_current_player_conn()
-                        current_conn.send("\nIt's your turn.".encode())
+                        safe_send(current_conn, "\nIt's your turn.")
                         announce_current_turn()
             
             elif upper_msg.startswith("BID ") and game.BID_PHASE:
                 if not game.game_started:
-                    conn.send("The game hasn't started yet.".encode())
+                    safe_send(conn, "The game hasn't started yet.")
                     continue
 
                 if not game.is_player_turn(conn):
-                    conn.send("It's not your turn.".encode())
+                    safe_send(conn, "It's not your turn.")
                     continue
 
                 if not game.last_conn:
@@ -143,22 +198,22 @@ def handle_client(conn: Any, addr) -> None:
                 bid = msg[4:].strip()
 
                 if not bid.isdigit():
-                    conn.send("Please enter a valid digit".encode())
+                    safe_send(conn, "Please enter a valid digit")
                     continue
             
                 elif int(bid) + game.bid_count == game.cards_per_player and conn == game.last_conn:
-                    conn.send("Number of bids cannot equal number of cards in hand".encode())
+                    safe_send(conn, "Number of bids cannot equal number of cards in hand")
                     continue
 
                 broadcast(f"{player.name} has bid {bid} card(s)".encode(), conn)
-                conn.send(f"Your bid of {bid} is accepted.".encode())
+                safe_send(conn, f"Your bid of {bid} is accepted.")
                 game.place_bid(conn, int(bid))
                 
 
                 game.advance_turn()
                 if len(game.bids) < len(game.players):
                     next_conn = game.get_current_player_conn()
-                    next_conn.send("\nYour turn to bid. Type: '<BID> #'".encode())
+                    safe_send(next_conn, "\nYour turn to bid. Type: '<BID> #'")
                     announce_current_turn()
                 
                 else:
@@ -171,8 +226,8 @@ def handle_client(conn: Any, addr) -> None:
                     hands = game.build_hands()
 
                     for player_conn, hand_msg in hands.items():
-                        player_conn.send(hand_msg.encode())
-                    first_conn.send("\nYour turn to play. Type: '<PLAY> card'".encode())
+                        safe_send(player_conn, hand_msg)
+                    safe_send(first_conn, "\nYour turn to play. Type: '<PLAY> card'")
                     announce_current_turn()
 
                     game.PLAY_PHASE = True
@@ -182,11 +237,11 @@ def handle_client(conn: Any, addr) -> None:
 
             elif upper_msg.startswith("PLAY ") and game.PLAY_PHASE:
                 if not game.game_started:
-                    conn.send("The game hasn't started yet.".encode())
+                    safe_send(conn, "The game hasn't started yet.")
                     continue
 
                 if not game.is_player_turn(conn):
-                    conn.send("It's not your turn.".encode())
+                    safe_send(conn, "It's not your turn.")
                     continue
 
                 card_played = normalized_msg[5:].strip()
@@ -194,7 +249,7 @@ def handle_client(conn: Any, addr) -> None:
 
                 matching_card, error = game.validate_play(conn, card_played)
                 if error:
-                    conn.send(error.encode())
+                    safe_send(conn, error)
                     continue
 
                 game.record_play(conn, matching_card)
@@ -205,7 +260,7 @@ def handle_client(conn: Any, addr) -> None:
                 # Send the player their updated hand in a consistent format
                 hand_str = ', '.join(str(card) for card in player.hand)
                 try:
-                    conn.send(f"\nYour hand: {hand_str}".encode())
+                    safe_send(conn, f"\nYour hand: {hand_str}")
                 except Exception:
                     pass
 
@@ -213,7 +268,7 @@ def handle_client(conn: Any, addr) -> None:
                 game.advance_turn()
                 if len(game.played_cards) < len(game.players):
                     next_conn = game.get_current_player_conn()
-                    next_conn.send("\nYour turn to PLAY. Type: '<PLAY> card'".encode())
+                    safe_send(next_conn, "\nYour turn to PLAY. Type: '<PLAY> card'")
                     announce_current_turn()
                 else:
                     # All players have played: resolve trick
@@ -242,9 +297,9 @@ def handle_client(conn: Any, addr) -> None:
                         game.score_round()
                         for pconn, player in game.players.items():
                             if player.tricks == player.bid:
-                                pconn.send(f"You made your bid! Score +{5 + player.bid}. Total: {player.score}".encode())
+                                safe_send(pconn, f"You made your bid! Score +{5 + player.bid}. Total: {player.score}")
                             else:
-                                pconn.send(f"You missed your bid. Tricks: {player.tricks}, Bid: {player.bid}. Total: {player.score}".encode())
+                                safe_send(pconn, f"You missed your bid. Tricks: {player.tricks}, Bid: {player.bid}. Total: {player.score}")
                         broadcast("\nRound complete.".encode(), None)
                         # reset for next round
                         game.reset()
@@ -255,7 +310,7 @@ def handle_client(conn: Any, addr) -> None:
                                 # send each player's score
                                 for pconn, player in game.players.items():
                                     try:
-                                        pconn.send(f"\n{player.name}: {player.score}".encode())
+                                        safe_send(pconn, f"\n{player.name}: {player.score}")
                                     except Exception:
                                         pass
                             except Exception:
@@ -283,14 +338,14 @@ def handle_client(conn: Any, addr) -> None:
 
                                 for player_conn, hand_msg in hands.items():
                                     try:
-                                        player_conn.send(hand_msg.encode())
+                                        safe_send(player_conn, hand_msg)
                                     except Exception:
                                         pass
 
                                 # Prompt first bidder and announce turn
                                 first_conn = game.get_current_player_conn()
                                 try:
-                                    first_conn.send("\nYour turn to bid. Type: '<BID> #'".encode())
+                                    safe_send(first_conn, "\nYour turn to bid. Type: '<BID> #'")
                                 except Exception:
                                     pass
                                 announce_current_turn()
@@ -299,11 +354,11 @@ def handle_client(conn: Any, addr) -> None:
                     else:
                         # Notify next player to play
                         next_conn = game.get_current_player_conn()
-                        next_conn.send("\nYour turn to PLAY. Type: '<PLAY> card'".encode())
+                        safe_send(next_conn, "\nYour turn to PLAY. Type: '<PLAY> card'")
                         announce_current_turn()
 
             else:
-                conn.send("Invalid command.".encode())
+                safe_send(conn, "Invalid command.")
 
         except Exception as e:
             print(f"[ERROR] {addr} - {e}")
@@ -320,26 +375,72 @@ def handle_client(conn: Any, addr) -> None:
 def broadcast(message: bytes, sender_conn: Any) -> None:
     # Iterate over a snapshot of current clients to allow safe removal
     for client in list(game.players.keys()):
-        if client != sender_conn:
+        if client == sender_conn:
+            continue
+        try:
+            client.sendall(message)
+        except Exception as e:
+            print(f"[ERROR] Failed to send message to a client: {e}")
             try:
-                client.send(message)
-            except Exception as e:
-                print(f"[ERROR] Failed to send message to a client: {e}")
-                try:
-                    client.close()
-                except:
-                    pass
-                # Clean up client from game state
-                if client in game.players:
-                    game.remove_player(client)
+                client.close()
+            except Exception:
+                pass
+            # Clean up client from game state only once the socket is truly gone
+            if client in game.players:
+                handle_disconnect(client)
     
 
 def handle_disconnect(conn: Any) -> None:
-    game.remove_player(conn)
-    # Optional: Reset game state or broadcast status
+    # Defensive disconnect handling: ensure socket is closed and player
+    # state is removed exactly once. This prevents later attempts to use
+    # a closed socket which caused "Bad file descriptor" errors.
+    try:
+        try:
+            conn.shutdown(2)
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # Remove from game state collections
+    try:
+        if conn in game.players:
+            del game.players[conn]
+    except Exception:
+        pass
+    try:
+        if conn in game.ready_players:
+            game.ready_players.discard(conn)
+    except Exception:
+        pass
+    try:
+        if conn in game.turn_order:
+            game.turn_order.remove(conn)
+    except Exception:
+        pass
+    try:
+        if hasattr(game, 'speaker_order') and conn in game.speaker_order:
+            game.speaker_order.remove(conn)
+            # normalize current speaker index
+            if getattr(game, 'current_speaker_index', 0) >= len(game.speaker_order):
+                game.current_speaker_index = 0
+    except Exception:
+        pass
+
+    # Optional: Reset game state or broadcast status if too few players
     if game.game_started and len(game.players) < game.min_players:
-        broadcast("A player left. Game cannot continue.".encode(), None)
-        game.reset()
+        try:
+            broadcast("A player left. Game cannot continue.".encode(), None)
+        except Exception:
+            pass
+        try:
+            game.reset()
+        except Exception:
+            pass
     
 
 def start():

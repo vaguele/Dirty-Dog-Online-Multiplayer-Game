@@ -71,6 +71,14 @@ class TestGame(unittest.TestCase):
         self.game.players[self.p3].hand = [Card('♣', '2')]
         self.assertFalse(self.game.hand_complete())
 
+    def test_speaker_order_rotates(self):
+        self.game.refresh_speaker_order()
+        self.assertEqual(self.game.get_current_speaker_conn(), self.p1)
+        self.game.advance_speaker()
+        self.assertEqual(self.game.get_current_speaker_conn(), self.p2)
+        self.game.advance_speaker()
+        self.assertEqual(self.game.get_current_speaker_conn(), self.p3)
+
 
 if __name__ == '__main__':
     unittest.main()
