@@ -1,0 +1,8 @@
+{
+  "chat.tools.terminal.autoApprove": {
+    "/^cd '/Users/victor/Downloads/VS Code/Projects/Dirty Dog/v2' && python3 -m py_compile main\\.py player\\.py deck\\.py card\\.py game\\.py server\\.py client\\.py && python3 -m unittest test_player\\.py test_game\\.py$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
+  }
+}

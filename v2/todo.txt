@@ -1,3 +1,11 @@
 Ensure gameplay works, (following leading suit when possible, taking tricks, number of games, hand size changes, and scoring)
 Custom max hand sizes? (Default to a number, change to max possible/ other hand size)
-Build a front end for the game
+Build a front end for the game (GUI) — next major milestone: consider
+	- Desktop GUI with Tkinter or PyQt
+	- Web UI (Flask + simple JS client)
+	- Keep protocol-compatible client/server separation so GUI can act as client
+
+Next immediate tasks:
+ - Add `v2/test_game.py` to cover `Game` behavior (done)
+ - Convert key `Game` returns to success/result tuples
+ - Add basic GUI prototype (added: `v2/gui.py`, `v2/gui_client.py`)
